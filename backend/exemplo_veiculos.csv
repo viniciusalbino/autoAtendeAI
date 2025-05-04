@@ -1,0 +1,4 @@
+Marca,Modelo,Versao,Ano Fabricacao,Ano Modelo,Quilometragem,Estado,Cambio,Combustivel,Motor,Potencia,Final Placa,Cor,Preco,Preco Promocional,Itens Opcionais,Link Fotos,Observacoes
+Toyota,Corolla,XEi 2.0,2022,2023,15000,Usado,Automático,Flex,2.0,170cv,5,Prata,120000,115000,"Ar condicionado;Direção hidráulica;Vidros elétricos","http://exemplo.com/foto1.jpg;http://exemplo.com/foto2.jpg","Único dono, todas as revisões na concessionária"
+Honda,Civic,EXL,2023,2023,0,Novo,Automático,Flex,2.0,155cv,7,Preto,145000,140000,"Ar condicionado;Direção elétrica;Vidros elétricos;Teto solar","http://exemplo.com/foto3.jpg;http://exemplo.com/foto4.jpg","Pronta entrega"
+Volkswagen,Golf,GTI,2022,2023,8000,Usado,Automático,Gasolina,2.0,230cv,9,Branco,180000,175000,"Ar condicionado;Direção elétrica;Vidros elétricos;Teto solar;Rodas de liga leve","http://exemplo.com/foto5.jpg;http://exemplo.com/foto6.jpg","Impecável, baixa quilometragem" 
