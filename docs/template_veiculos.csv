@@ -1,0 +1,4 @@
+Marca,Modelo,Ano Fabricacao,Ano Modelo,Quilometragem,Estado,Preco,Itens Opcionais,Cambio,Combustivel,Final Placa,Cor,Link Fotos (Separados por ;),Vendido (SIM/NAO)
+Toyota,Corolla,2022,2023,15000,Usado,89500.00,"Ar Condicionado;Bancos em Couro;Vidro Elétrico;Direção Elétrica;Multimídia",Automatico,Flex,3,Prata,"https://example.com/foto1.jpg;https://example.com/foto2.jpg",NAO
+Fiat,Strada,2023,2023,0,Novo,75000.00,"Ar Condicionado;Direção Hidráulica",Manual,Flex,8,Branco,,NAO
+Volkswagen,Nivus,2021,2022,35000,Usado,110000.00,"Ar Condicionado;Direção Elétrica;Teto Solar;Bancos em Couro",Automatico,Flex,1,Cinza,"https://example.com/nivus1.png",NAO
