@@ -38,7 +38,19 @@ user_model = api.model('User', {
 
 user_registration = api.model('UserRegistration', {
     'email': fields.String(required=True, description='Email do usuário'),
+    'password': fields.String(required=True, description='Senha do usuário'),
+    'dealership_name': fields.String(required=True, description='Nome da concessionária'),
+    'whatsapp_number': fields.String(required=True, description='Número do WhatsApp')
+})
+
+login_model = api.model('Login', {
+    'email': fields.String(required=True, description='Email do usuário'),
     'password': fields.String(required=True, description='Senha do usuário')
+})
+
+auth_response = api.model('AuthResponse', {
+    'access_token': fields.String(description='JWT access token'),
+    'user': fields.Nested(user_model)
 })
 
 dealership_model = api.model('Dealership', {
@@ -90,27 +102,48 @@ def init_jwt(app):
 class UserRegistration(Resource):
     @auth_ns.expect(user_registration)
     @auth_ns.response(201, 'User registered successfully')
-    @auth_ns.response(400, 'Invalid input')
+    @auth_ns.response(400, 'Validation error')
     @auth_ns.response(409, 'Email already registered')
+    @auth_ns.response(500, 'Internal server error')
+
     def post(self):
         """Register a new user"""
         try:
             data = request.get_json()
             current_app.logger.debug(f"Received registration data: {data}")
+
             if not data or 'email' not in data or 'password' not in data:
                 current_app.logger.warning("Missing email or password in registration request")
                 return {'error': 'Email and password are required'}, 400
+            
             email = data['email']
             password = data['password']
+
             if User.query.filter_by(email=email).first():
                 current_app.logger.warning(f"Email {email} already registered")
                 return {'error': 'Email already registered'}, 409
-            user = User(email=email)
+                        # Create dealership if provided
+            dealership = None
+            if 'dealership_name' in data and 'whatsapp_number' in data:
+                dealership = Dealership(
+                    name=data['dealership_name'],
+                    whatsapp_number=data['whatsapp_number'],
+                    active=True
+                )
+                db.session.add(dealership)
+                db.session.flush()  # Get dealership ID without committing
+            
+            # Create user
+            user = User(email=email, active=True)
+            if dealership:
+                user.dealership_id = dealership.id
             user.set_password(password)
             db.session.add(user)
             db.session.commit()
+
             current_app.logger.info(f"User {email} registered successfully")
             return {'message': 'User registered successfully'}, 201
+        
         except Exception as e:
             current_app.logger.error(f"Error during registration: {str(e)}")
             db.session.rollback()
@@ -118,12 +151,12 @@ class UserRegistration(Resource):
 
 @auth_ns.route('/login')
 class UserLogin(Resource):
-    @auth_ns.expect(api.model('UserLogin', {
-        'email': fields.String(required=True, description='Email do usuário'),
-        'password': fields.String(required=True, description='Senha do usuário')
-    }))
-    @auth_ns.response(200, 'Login successful')
+    @auth_ns.expect(login_model)
+    @auth_ns.response(200, 'Login successful', auth_response)
+    @auth_ns.response(400, 'Validation error')
     @auth_ns.response(401, 'Invalid credentials')
+    @auth_ns.response(500, 'Internal server error')
+
     def post(self):
         """Login user and return JWT token"""
         try:
@@ -153,7 +186,9 @@ class UserLogin(Resource):
                 'user': {
                     'id': user.id,
                     'email': user.email,
-                    'dealership_id': user.dealership_id
+                    'dealership_id': user.dealership_id,
+                    'active': user.active,
+                    'created_at': user.created_at.isoformat() if user.created_at else None
                 }
             }, 200
             
