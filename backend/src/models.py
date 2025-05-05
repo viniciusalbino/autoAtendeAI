@@ -3,6 +3,7 @@ from src.database import db # Importa a instância db de database.py
 from datetime import datetime
 from sqlalchemy.orm import validates
 import re
+from werkzeug.security import generate_password_hash, check_password_hash
 
 class Dealership(db.Model):
     __tablename__ = 'dealerships'
@@ -30,8 +31,16 @@ class Dealership(db.Model):
             return value
         # Remove non-numeric characters
         cleaned = re.sub(r'\D', '', value)
-        if len(cleaned) < 10 or len(cleaned) > 11:
-            raise ValueError(f'Invalid {key} number format')
+        
+        if key == 'whatsapp_number':
+            # WhatsApp numbers should be in international format (e.g., 5511999999999)
+            if len(cleaned) < 12 or len(cleaned) > 13:
+                raise ValueError(f'Invalid {key} number format. Must be in international format (e.g., 5511999999999)')
+        else:  # phone
+            # Regular phone numbers should be 10 or 11 digits
+            if len(cleaned) < 10 or len(cleaned) > 11:
+                raise ValueError(f'Invalid {key} number format')
+        
         return value
     
     @validates('email')
@@ -171,6 +180,40 @@ class Vehicle(db.Model):
     
     def __repr__(self):
         return f'<Vehicle {self.marca} {self.modelo} {self.ano_modelo}>'
+
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256), nullable=False)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    dealership_id = db.Column(db.Integer, db.ForeignKey('dealerships.id'), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    plans = db.relationship('Plan', backref='user', lazy=True, cascade='all, delete-orphan')
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    def __repr__(self):
+        return f'<User {self.email}>'
+
+class Plan(db.Model):
+    __tablename__ = 'plans'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    plan_type = db.Column(db.String(50), nullable=False)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    start_date = db.Column(db.DateTime, nullable=False)
+    end_date = db.Column(db.DateTime, nullable=False)
+    last_payment_date = db.Column(db.DateTime, nullable=True)
+    next_payment_due = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<Plan {self.plan_type} for User {self.user_id}>'
 
 # Não se esqueça de criar as tabelas no banco de dados!
 # Dentro do shell Python (após ativar venv):

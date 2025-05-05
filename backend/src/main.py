@@ -3,12 +3,14 @@ import os
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request, current_app
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
 from sqlalchemy import text
 from src.database import db
+from src.routes import main_bp, init_jwt, whatsapp_bp
+from flask_migrate import Migrate
 
 # Adiciona o diretório pai ao sys.path - NÃO ALTERE!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -32,13 +34,7 @@ app = Flask(__name__)
 setup_logging(app)
 
 # Configuração do CORS
-CORS(app, resources={
-    r"/api/*": {
-        "origins": os.getenv('ALLOWED_ORIGINS', '*').split(','),
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
-    }
-})
+CORS(app)  # Enable CORS for all routes
 
 # Configuração do Banco de Dados
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
@@ -50,11 +46,11 @@ app.config['JSON_SORT_KEYS'] = False  # Mantém a ordem das chaves no JSON
 db.init_app(app)
 
 # Importar modelos e rotas
-from src.models import Dealership, Vehicle
-from src.routes.whatsapp import whatsapp_bp
+from src.models import Dealership, Vehicle, User, Plan
 
 # Registrar Blueprints
 app.register_blueprint(whatsapp_bp, url_prefix='/whatsapp')
+app.register_blueprint(main_bp)
 
 # Error handlers
 @app.errorhandler(HTTPException)
@@ -121,6 +117,10 @@ def init_db():
     with app.app_context():
         db.create_all()
         app.logger.info("Database tables created successfully")
+
+Migrate(app, db)
+
+init_jwt(app)
 
 if __name__ == '__main__':
     init_db()

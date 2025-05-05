@@ -14,23 +14,29 @@ autoAtendeAI/
 │   │   ├── models.py         # Modelos do banco de dados
 │   │   ├── routes/
 │   │   │   ├── __init__.py
-│   │   │   └── whatsapp.py   # Rotas do webhook do WhatsApp
+│   │   │   ├── main.py      # Rotas principais da API (auth, dealerships, vehicles)
+│   │   │   └── whatsapp.py  # Rotas do webhook do WhatsApp
 │   │   └── services/
 │   │       └── whatsapp_service.py  # Lógica de processamento do WhatsApp
-│   ├── venv/                 # Ambiente virtual Python
-│   ├── .env                  # Variáveis de ambiente
-│   └── requirements.txt      # Dependências Python
-└── frontend/                 # (A ser implementado)
+│   ├── tests/               # Testes automatizados
+│   ├── migrations/         # Migrações do banco de dados
+│   ├── venv/              # Ambiente virtual Python
+│   ├── .env              # Variáveis de ambiente
+│   └── requirements.txt   # Dependências Python
+└── frontend/            # (A ser implementado)
 ```
 
 ## Configuração do Backend
 
 ### Dependências Principais
 - Python 3.11+
-- Flask
-- Flask-SQLAlchemy
-- Flask-CORS
-- python-dotenv
+- Flask e extensões:
+  - Flask-SQLAlchemy (ORM)
+  - Flask-CORS (CORS support)
+  - Flask-JWT-Extended (Autenticação)
+  - Flask-RESTX (API documentation)
+  - Flask-Migrate (Migrações)
+- python-dotenv (Variáveis de ambiente)
 - psycopg2-binary (PostgreSQL)
 - twilio (API WhatsApp)
 - google-generativeai (Gemini AI)
@@ -53,16 +59,37 @@ FLASK_SECRET_KEY=sua_chave_secreta
 FLASK_ENV=development
 PORT=5001
 
+# JWT
+JWT_SECRET_KEY=sua_chave_jwt
+JWT_ACCESS_TOKEN_EXPIRES=1d
+
 # CORS
 ALLOWED_ORIGINS=http://localhost:3000,https://seu-dominio.com
 ```
 
 ### Modelos do Banco de Dados
 
+#### User (Usuário)
+- id (PK)
+- email (único)
+- password_hash
+- active (boolean)
+- dealership_id (FK para Dealership)
+- created_at
+- plans (relacionamento com Plan)
+
 #### Dealership (Concessionária)
 - id (PK)
 - name (nome da concessionária)
 - whatsapp_number (número do WhatsApp)
+- email
+- cnpj
+- address
+- city
+- state
+- phone
+- website
+- active (boolean)
 - vehicles (relacionamento com Vehicle)
 
 #### Vehicle (Veículo)
@@ -70,76 +97,115 @@ ALLOWED_ORIGINS=http://localhost:3000,https://seu-dominio.com
 - dealership_id (FK para Dealership)
 - marca
 - modelo
+- versao
 - ano_fabricacao
 - ano_modelo
 - quilometragem
 - estado (Novo/Usado)
 - preco
+- preco_promocional
+- destaque (boolean)
+- vendido (boolean)
 - itens_opcionais
 - cambio
 - combustivel
+- motor
+- potencia
 - final_placa
 - cor
 - link_fotos
-- vendido (boolean)
 - data_cadastro
 
-### Rotas Implementadas
+#### Plan (Plano)
+- id (PK)
+- user_id (FK para User)
+- plan_type
+- is_active
+- start_date
+- end_date
+- last_payment_date
+- next_payment_due
+- created_at
 
-#### Endpoints Principais
-- `GET /health` - Verificação de saúde da API
-- `GET /` - Mensagem de boas-vindas
-- `GET /debug/vehicles` - Lista todos os veículos (debug)
+### Endpoints da API
 
-#### Webhook WhatsApp
-- `POST /whatsapp/webhook` - Recebe mensagens do WhatsApp
-- `GET /whatsapp/webhook` - Verificação do webhook (Twilio)
+#### Autenticação
+- `POST /auth/register` - Registro de usuário
+- `POST /auth/login` - Login de usuário (retorna JWT)
 
-### Serviços Implementados
+#### Concessionárias
+- `GET /dealerships/` - Lista concessionárias
+- `POST /dealerships/` - Cria nova concessionária
+- `GET /dealerships/<id>` - Detalhes da concessionária
+- `PUT /dealerships/<id>` - Atualiza concessionária
+- `DELETE /dealerships/<id>` - Desativa concessionária
 
-#### WhatsApp Service
-- `handle_whatsapp_webhook()` - Processa mensagens recebidas
-- Integração com Twilio para envio de respostas
-- Processamento de mensagens com Google Gemini AI
+#### Veículos
+- `GET /vehicles/` - Lista veículos (com filtros)
+- `POST /vehicles/` - Cadastra novo veículo
+- `GET /vehicles/<id>` - Detalhes do veículo
+- `PUT /vehicles/<id>` - Atualiza veículo
+- `PUT /vehicles/<id>/mark-sold` - Marca veículo como vendido
 
-## Estado Atual do Projeto
+#### WhatsApp
+- `POST /whatsapp/webhook` - Recebe mensagens
+- `GET /whatsapp/webhook` - Verificação do webhook
 
-### Backend
-- ✅ Configuração básica do Flask
-- ✅ Conexão com banco de dados PostgreSQL
-- ✅ Modelos de dados (Dealership e Vehicle)
-- ✅ Webhook do WhatsApp
-- ✅ Integração com Twilio
-- ✅ Integração com Google Gemini AI
-- ✅ Sistema de logging
-- ✅ Tratamento de erros
-- ✅ CORS configurado
+## Guia Passo a Passo: Criando uma Nova Concessionária
 
-### Frontend
-- ⏳ A ser implementado
+### 1. Registro de Usuário
+```bash
+curl -X POST http://localhost:5001/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "seu.email@exemplo.com",
+    "password": "sua_senha"
+  }'
+```
 
-## Próximos Passos
+### 2. Login para Obter Token JWT
+```bash
+curl -X POST http://localhost:5001/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "seu.email@exemplo.com",
+    "password": "sua_senha"
+  }'
+```
+Guarde o token JWT retornado para usar nas próximas requisições.
 
-1. Implementar o frontend React com:
-   - Painel de controle para concessionárias
-   - Gerenciamento de veículos
-   - Upload de planilhas
-   - Autenticação de usuários
+### 3. Criar Concessionária
+```bash
+curl -X POST http://localhost:5001/dealerships/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer SEU_TOKEN_JWT" \
+  -d '{
+    "name": "Nome da Concessionária",
+    "whatsapp_number": "5511999999999",
+    "email": "concessionaria@exemplo.com",
+    "cnpj": "12345678901234",
+    "address": "Rua Exemplo, 123",
+    "city": "São Paulo",
+    "state": "SP",
+    "phone": "1133334444",
+    "website": "https://exemplo.com"
+  }'
+```
 
-2. Melhorias no backend:
-   - Autenticação JWT
-   - Validação de dados
-   - Testes automatizados
-   - Documentação da API (Swagger/OpenAPI)
-
-3. Melhorias na IA:
-   - Refinamento do prompt do Gemini
-   - Tratamento de contexto de conversa
-   - Suporte a mais intenções
+### 4. Verificar Criação
+```bash
+curl -X GET http://localhost:5001/dealerships/ \
+  -H "Authorization: Bearer SEU_TOKEN_JWT"
+```
 
 ## Como Executar
 
 1. Clone o repositório
+```bash
+git clone https://github.com/seu-usuario/autoAtendeAI.git
+cd autoAtendeAI
+```
+
 2. Configure o ambiente virtual:
 ```bash
 cd backend
@@ -156,21 +222,33 @@ pip install -r requirements.txt
 
 4. Configure o arquivo .env com suas credenciais
 
-5. Inicialize o banco de dados:
+5. Execute as migrações do banco de dados:
 ```bash
-python src/main.py
+flask db upgrade
 ```
 
-6. O servidor estará rodando em `http://localhost:5001`
+6. Inicie o servidor:
+```bash
+flask run --port 5001
+```
 
-## Notas para Desenvolvimento
+O servidor estará rodando em `http://localhost:5001`
+
+## Testes
+
+Para executar os testes:
+```bash
+pytest
+```
+
+## Notas de Desenvolvimento
 
 - O projeto usa SQLAlchemy como ORM
-- As rotas do WhatsApp estão em `src/routes/whatsapp.py`
-- A lógica de processamento do WhatsApp está em `src/services/whatsapp_service.py`
-- O sistema de logging está configurado em `logs/backend.log`
-- O CORS está configurado para permitir requisições do frontend
-- As variáveis de ambiente são carregadas via python-dotenv
+- Autenticação via JWT com Flask-JWT-Extended
+- Documentação da API com Flask-RESTX (Swagger)
+- CORS habilitado para desenvolvimento local
+- Sistema de logging configurado em `logs/backend.log`
+- Migrações do banco gerenciadas com Flask-Migrate
 
 ## Contribuição
 

@@ -1,0 +1,7 @@
+setup.py
+autoAtendeAI.egg-info/PKG-INFO
+autoAtendeAI.egg-info/SOURCES.txt
+autoAtendeAI.egg-info/dependency_links.txt
+autoAtendeAI.egg-info/requires.txt
+autoAtendeAI.egg-info/top_level.txt
+tests/test_api.py

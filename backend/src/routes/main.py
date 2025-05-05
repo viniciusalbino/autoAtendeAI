@@ -1,9 +1,8 @@
-# src/routes.py
 from flask import Blueprint, jsonify, request, current_app
 from src.database import db
-from src.models import Vehicle, Dealership
+from src.models import Vehicle, Dealership, User, Plan
 from sqlalchemy import or_, and_
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import io
 import logging
@@ -11,205 +10,279 @@ import os
 from src.ai_processor import process_message_with_ai
 import traceback
 import requests
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_restx import Api, Resource, fields, Namespace
 
 main_bp = Blueprint('main', __name__)
+api = Api(main_bp, version='1.0', title='Auto Atende AI API',
+          description='API para sistema de atendimento automatizado via WhatsApp para concessionárias')
+
+# Namespaces
+auth_ns = Namespace('auth', description='Operações de autenticação')
+dealership_ns = Namespace('dealerships', description='Operações de concessionárias')
+vehicle_ns = Namespace('vehicles', description='Operações de veículos')
+
+api.add_namespace(auth_ns)
+api.add_namespace(dealership_ns)
+api.add_namespace(vehicle_ns)
+
+# Models for Swagger
+user_model = api.model('User', {
+    'id': fields.Integer(readonly=True),
+    'email': fields.String(required=True, description='Email do usuário'),
+    'active': fields.Boolean(description='Status do usuário'),
+    'dealership_id': fields.Integer(description='ID da concessionária associada'),
+    'created_at': fields.DateTime(readonly=True)
+})
+
+user_registration = api.model('UserRegistration', {
+    'email': fields.String(required=True, description='Email do usuário'),
+    'password': fields.String(required=True, description='Senha do usuário')
+})
+
+dealership_model = api.model('Dealership', {
+    'id': fields.Integer(readonly=True),
+    'name': fields.String(required=True, description='Nome da concessionária'),
+    'whatsapp_number': fields.String(required=True, description='Número do WhatsApp'),
+    'email': fields.String(required=True, description='Email da concessionária'),
+    'cnpj': fields.String(required=True, description='CNPJ da concessionária'),
+    'address': fields.String(description='Endereço'),
+    'city': fields.String(description='Cidade'),
+    'state': fields.String(description='Estado'),
+    'phone': fields.String(description='Telefone'),
+    'website': fields.String(description='Website'),
+    'active': fields.Boolean(description='Status da concessionária')
+})
+
+vehicle_model = api.model('Vehicle', {
+    'id': fields.Integer(readonly=True),
+    'dealership_id': fields.Integer(required=True, description='ID da concessionária'),
+    'marca': fields.String(required=True, description='Marca do veículo'),
+    'modelo': fields.String(required=True, description='Modelo do veículo'),
+    'versao': fields.String(description='Versão do veículo'),
+    'ano_fabricacao': fields.Integer(description='Ano de fabricação'),
+    'ano_modelo': fields.Integer(description='Ano do modelo'),
+    'quilometragem': fields.Integer(description='Quilometragem'),
+    'estado': fields.String(description='Estado do veículo (Novo/Usado)'),
+    'cambio': fields.String(description='Tipo de câmbio'),
+    'combustivel': fields.String(description='Tipo de combustível'),
+    'motor': fields.String(description='Motor'),
+    'potencia': fields.String(description='Potência'),
+    'final_placa': fields.String(description='Final da placa'),
+    'cor': fields.String(description='Cor'),
+    'preco': fields.Float(description='Preço'),
+    'preco_promocional': fields.Float(description='Preço promocional'),
+    'destaque': fields.Boolean(description='Veículo em destaque'),
+    'vendido': fields.Boolean(description='Status de venda')
+})
+
+# JWT Setup
+jwt = JWTManager()
+
+def init_jwt(app):
+    app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET', 'super-secret')
+    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=int(os.getenv('JWT_EXPIRATION', '1').replace('d','')))
+    jwt.init_app(app)
+
+# Auth Routes
+@auth_ns.route('/register')
+class UserRegistration(Resource):
+    @auth_ns.expect(user_registration)
+    @auth_ns.response(201, 'User registered successfully')
+    @auth_ns.response(400, 'Invalid input')
+    @auth_ns.response(409, 'Email already registered')
+    def post(self):
+        """Register a new user"""
+        try:
+            data = request.get_json()
+            current_app.logger.debug(f"Received registration data: {data}")
+            if not data or 'email' not in data or 'password' not in data:
+                current_app.logger.warning("Missing email or password in registration request")
+                return {'error': 'Email and password are required'}, 400
+            email = data['email']
+            password = data['password']
+            if User.query.filter_by(email=email).first():
+                current_app.logger.warning(f"Email {email} already registered")
+                return {'error': 'Email already registered'}, 409
+            user = User(email=email)
+            user.set_password(password)
+            db.session.add(user)
+            db.session.commit()
+            current_app.logger.info(f"User {email} registered successfully")
+            return {'message': 'User registered successfully'}, 201
+        except Exception as e:
+            current_app.logger.error(f"Error during registration: {str(e)}")
+            db.session.rollback()
+            return {'error': 'Internal server error'}, 500
+
+@auth_ns.route('/login')
+class UserLogin(Resource):
+    @auth_ns.expect(api.model('UserLogin', {
+        'email': fields.String(required=True, description='Email do usuário'),
+        'password': fields.String(required=True, description='Senha do usuário')
+    }))
+    @auth_ns.response(200, 'Login successful')
+    @auth_ns.response(401, 'Invalid credentials')
+    def post(self):
+        """Login user and return JWT token"""
+        try:
+            data = request.get_json()
+            current_app.logger.debug(f"Received login data for email: {data.get('email')}")
+            
+            if not data or 'email' not in data or 'password' not in data:
+                current_app.logger.warning("Missing email or password in login request")
+                return {'error': 'Email and password are required'}, 400
+                
+            user = User.query.filter_by(email=data['email']).first()
+            
+            if not user or not user.check_password(data['password']):
+                current_app.logger.warning(f"Failed login attempt for email: {data.get('email')}")
+                return {'error': 'Invalid email or password'}, 401
+                
+            if not user.active:
+                current_app.logger.warning(f"Login attempt for inactive user: {data.get('email')}")
+                return {'error': 'Account is inactive'}, 401
+            
+            # Create access token
+            access_token = create_access_token(identity=user.id)
+            
+            current_app.logger.info(f"User {user.email} logged in successfully")
+            return {
+                'access_token': access_token,
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'dealership_id': user.dealership_id
+                }
+            }, 200
+            
+        except Exception as e:
+            current_app.logger.error(f"Error during login: {str(e)}")
+            return {'error': 'Internal server error'}, 500
 
 # Dealership Routes
-@main_bp.route('/api/dealerships', methods=['GET'])
-def get_dealerships():
-    try:
-        dealerships = Dealership.query.filter_by(active=True).all()
-        return jsonify({
-            'dealerships': [{
-                'id': d.id,
-                'name': d.name,
-                'whatsapp_number': d.whatsapp_number,
-                'email': d.email,
-                'city': d.city,
-                'state': d.state,
-                'website': d.website
-            } for d in dealerships]
-        })
-    except Exception as e:
-        current_app.logger.error(f"Error fetching dealerships: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+@dealership_ns.route('/')
+class DealershipList(Resource):
+    @dealership_ns.marshal_list_with(dealership_model)
+    def get(self):
+        """List all active dealerships"""
+        try:
+            dealerships = Dealership.query.filter_by(active=True).all()
+            return dealerships
+        except Exception as e:
+            current_app.logger.error(f"Error fetching dealerships: {str(e)}")
+            return {'error': 'Internal server error'}, 500
 
-@main_bp.route('/api/dealerships/<int:dealership_id>', methods=['GET'])
-def get_dealership(dealership_id):
-    try:
-        dealership = Dealership.query.get_or_404(dealership_id)
-        return jsonify({
-            'id': dealership.id,
-            'name': dealership.name,
-            'whatsapp_number': dealership.whatsapp_number,
-            'email': dealership.email,
-            'cnpj': dealership.cnpj,
-            'address': dealership.address,
-            'city': dealership.city,
-            'state': dealership.state,
-            'phone': dealership.phone,
-            'website': dealership.website,
-            'active': dealership.active,
-            'created_at': dealership.created_at.isoformat(),
-            'updated_at': dealership.updated_at.isoformat()
-        })
-    except Exception as e:
-        current_app.logger.error(f"Error fetching dealership {dealership_id}: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@main_bp.route('/api/dealerships', methods=['POST'])
-def create_dealership():
-    try:
-        data = request.get_json()
-        required_fields = ['name', 'whatsapp_number', 'email', 'cnpj']
-        
-        # Validate required fields
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'Missing required field: {field}'}), 400
-        
-        # Check if dealership already exists
-        if Dealership.query.filter_by(cnpj=data['cnpj']).first():
-            return jsonify({'error': 'CNPJ already registered'}), 409
-        
-        dealership = Dealership(
-            name=data['name'],
-            whatsapp_number=data['whatsapp_number'],
-            email=data['email'],
-            cnpj=data['cnpj'],
-            address=data.get('address'),
-            city=data.get('city'),
-            state=data.get('state'),
-            phone=data.get('phone'),
-            website=data.get('website')
-        )
-        
-        db.session.add(dealership)
-        db.session.commit()
-        
-        return jsonify({
-            'message': 'Dealership created successfully',
-            'dealership_id': dealership.id
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error creating dealership: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+    @dealership_ns.expect(dealership_model)
+    @dealership_ns.marshal_with(dealership_model, code=201)
+    def post(self):
+        """Create a new dealership"""
+        try:
+            data = request.get_json()
+            required_fields = ['name', 'whatsapp_number', 'email', 'cnpj']
+            
+            for field in required_fields:
+                if field not in data:
+                    return {'error': f'Missing required field: {field}'}, 400
+            
+            if Dealership.query.filter_by(cnpj=data['cnpj']).first():
+                return {'error': 'CNPJ already registered'}, 409
+            
+            dealership = Dealership(**data)
+            db.session.add(dealership)
+            db.session.commit()
+            
+            return dealership, 201
+            
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(f"Error creating dealership: {str(e)}")
+            return {'error': 'Internal server error'}, 500
 
 # Vehicle Routes
-@main_bp.route('/api/vehicles', methods=['GET'])
-def get_vehicles():
-    try:
-        # Get query parameters
-        marca = request.args.get('marca')
-        modelo = request.args.get('modelo')
-        min_price = request.args.get('min_price', type=float)
-        max_price = request.args.get('max_price', type=float)
-        estado = request.args.get('estado')
-        cambio = request.args.get('cambio')
-        combustivel = request.args.get('combustivel')
-        final_placa = request.args.get('final_placa')
-        destaque = request.args.get('destaque', type=bool)
-        
-        # Build query
-        query = Vehicle.query.filter_by(vendido=False)
-        
-        if marca:
-            query = query.filter(Vehicle.marca.ilike(f'%{marca}%'))
-        if modelo:
-            query = query.filter(Vehicle.modelo.ilike(f'%{modelo}%'))
-        if min_price is not None:
-            query = query.filter(Vehicle.preco >= min_price)
-        if max_price is not None:
-            query = query.filter(Vehicle.preco <= max_price)
-        if estado:
-            query = query.filter(Vehicle.estado == estado)
-        if cambio:
-            query = query.filter(Vehicle.cambio == cambio)
-        if combustivel:
-            query = query.filter(Vehicle.combustivel == combustivel)
-        if final_placa:
-            query = query.filter(Vehicle.final_placa == final_placa)
-        if destaque:
-            query = query.filter(
-                and_(
-                    Vehicle.destaque == True,
-                    or_(
-                        Vehicle.destaque_ate == None,
-                        Vehicle.destaque_ate > datetime.utcnow()
+@vehicle_ns.route('/')
+class VehicleList(Resource):
+    @vehicle_ns.marshal_list_with(vehicle_model)
+    def get(self):
+        """List all vehicles with optional filters"""
+        try:
+            dealership_id = request.args.get('dealership_id', type=int)
+            if not dealership_id:
+                return {'error': 'dealership_id is required'}, 400
+
+            marca = request.args.get('marca')
+            modelo = request.args.get('modelo')
+            min_price = request.args.get('min_price', type=float)
+            max_price = request.args.get('max_price', type=float)
+            estado = request.args.get('estado')
+            cambio = request.args.get('cambio')
+            combustivel = request.args.get('combustivel')
+            final_placa = request.args.get('final_placa')
+            destaque = request.args.get('destaque', type=bool)
+            
+            query = Vehicle.query.filter_by(dealership_id=dealership_id, vendido=False)
+            
+            if marca:
+                query = query.filter(Vehicle.marca.ilike(f'%{marca}%'))
+            if modelo:
+                query = query.filter(Vehicle.modelo.ilike(f'%{modelo}%'))
+            if min_price is not None:
+                query = query.filter(Vehicle.preco >= min_price)
+            if max_price is not None:
+                query = query.filter(Vehicle.preco <= max_price)
+            if estado:
+                query = query.filter(Vehicle.estado == estado)
+            if cambio:
+                query = query.filter(Vehicle.cambio == cambio)
+            if combustivel:
+                query = query.filter(Vehicle.combustivel == combustivel)
+            if final_placa:
+                query = query.filter(Vehicle.final_placa == final_placa)
+            if destaque:
+                query = query.filter(
+                    and_(
+                        Vehicle.destaque == True,
+                        or_(
+                            Vehicle.destaque_ate == None,
+                            Vehicle.destaque_ate > datetime.utcnow()
+                        )
                     )
                 )
-            )
-        
-        vehicles = query.all()
-        return jsonify({'vehicles': [vehicle.to_dict() for vehicle in vehicles]})
-        
-    except Exception as e:
-        current_app.logger.error(f"Error fetching vehicles: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+            
+            vehicles = query.all()
+            return vehicles
+            
+        except Exception as e:
+            current_app.logger.error(f"Error fetching vehicles: {str(e)}")
+            return {'error': 'Internal server error'}, 500
 
-@main_bp.route('/api/vehicles/<int:vehicle_id>', methods=['GET'])
-def get_vehicle(vehicle_id):
-    try:
-        vehicle = Vehicle.query.get_or_404(vehicle_id)
-        return jsonify(vehicle.to_dict())
-    except Exception as e:
-        current_app.logger.error(f"Error fetching vehicle {vehicle_id}: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
-
-@main_bp.route('/api/vehicles', methods=['POST'])
-def create_vehicle():
-    try:
-        data = request.get_json()
-        required_fields = ['dealership_id', 'marca', 'modelo']
-        
-        # Validate required fields
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'error': f'Missing required field: {field}'}), 400
-        
-        # Check if dealership exists
-        dealership = Dealership.query.get(data['dealership_id'])
-        if not dealership:
-            return jsonify({'error': 'Dealership not found'}), 404
-        
-        vehicle = Vehicle(
-            dealership_id=data['dealership_id'],
-            marca=data['marca'],
-            modelo=data['modelo'],
-            versao=data.get('versao'),
-            ano_fabricacao=data.get('ano_fabricacao'),
-            ano_modelo=data.get('ano_modelo'),
-            quilometragem=data.get('quilometragem', 0),
-            estado=data.get('estado'),
-            cambio=data.get('cambio'),
-            combustivel=data.get('combustivel'),
-            motor=data.get('motor'),
-            potencia=data.get('potencia'),
-            final_placa=data.get('final_placa'),
-            cor=data.get('cor'),
-            preco=data.get('preco'),
-            preco_promocional=data.get('preco_promocional'),
-            destaque=data.get('destaque', False),
-            destaque_ate=datetime.fromisoformat(data['destaque_ate']) if data.get('destaque_ate') else None,
-            itens_opcionais=data.get('itens_opcionais'),
-            link_fotos=data.get('link_fotos'),
-            observacoes=data.get('observacoes')
-        )
-        
-        db.session.add(vehicle)
-        db.session.commit()
-        
-        return jsonify({
-            'message': 'Vehicle created successfully',
-            'vehicle_id': vehicle.id
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.error(f"Error creating vehicle: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+    @vehicle_ns.expect(vehicle_model)
+    @vehicle_ns.marshal_with(vehicle_model, code=201)
+    def post(self):
+        """Create a new vehicle"""
+        try:
+            data = request.get_json()
+            required_fields = ['dealership_id', 'marca', 'modelo']
+            
+            for field in required_fields:
+                if field not in data:
+                    return {'error': f'Missing required field: {field}'}, 400
+            
+            dealership = Dealership.query.get(data['dealership_id'])
+            if not dealership:
+                return {'error': 'Dealership not found'}, 404
+            
+            vehicle = Vehicle(**data)
+            db.session.add(vehicle)
+            db.session.commit()
+            
+            return vehicle, 201
+            
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(f"Error creating vehicle: {str(e)}")
+            return {'error': 'Internal server error'}, 500
 
 @main_bp.route('/api/vehicles/<int:vehicle_id>', methods=['PUT'])
 def update_vehicle(vehicle_id):
@@ -533,7 +606,3 @@ def debug_vehicles():
             'status': 'error',
             'message': str(e)
         }), 500
-
-# Não se esqueça de registrar o blueprint em main.py:
-# from src.routes import main_bp
-# app.register_blueprint(main_bp)
