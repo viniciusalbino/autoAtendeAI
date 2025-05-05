@@ -1,3 +1,4 @@
+'use client'
 import * as React from "react"
 import { useVehicles, useCreateVehicle, useUpdateVehicle, useDeleteVehicle } from "@/hooks/use-vehicles"
 import { VehicleList } from "@/components/vehicles/vehicle-list"
@@ -68,4 +69,6 @@ export function VehiclesPage() {
       />
     </div>
   )
-} 
+}
+
+export default VehiclesPage; 

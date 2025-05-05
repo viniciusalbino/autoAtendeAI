@@ -7,6 +7,7 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
+from sqlalchemy import text
 from src.database import db
 
 # Adiciona o diretório pai ao sys.path - NÃO ALTERE!
@@ -45,14 +46,15 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'default_secret_key')
 app.config['JSON_SORT_KEYS'] = False  # Mantém a ordem das chaves no JSON
 
+# Inicializa o SQLAlchemy com a app
 db.init_app(app)
 
 # Importar modelos e rotas
 from src.models import Dealership, Vehicle
-from src.routes import main_bp
+from src.routes.whatsapp import whatsapp_bp
 
 # Registrar Blueprints
-app.register_blueprint(main_bp)
+app.register_blueprint(whatsapp_bp, url_prefix='/whatsapp')
 
 # Error handlers
 @app.errorhandler(HTTPException)
@@ -77,8 +79,8 @@ def handle_unexpected_error(e):
 @app.route('/health')
 def health_check():
     try:
-        # Testa a conexão com o banco de dados
-        db.session.execute('SELECT 1')
+        # Testa a conexão com o banco de dados usando text()
+        db.session.execute(text('SELECT 1'))
         return jsonify({
             "status": "healthy",
             "database": "connected",
@@ -98,6 +100,22 @@ def hello():
         "version": "1.0.0",
         "status": "operational"
     })
+
+@app.route('/debug/vehicles')
+def debug_vehicles():
+    try:
+        vehicles = Vehicle.query.all()
+        return jsonify({
+            "status": "success",
+            "count": len(vehicles),
+            "vehicles": [vehicle.to_dict() for vehicle in vehicles]
+        })
+    except Exception as e:
+        app.logger.error(f"Error fetching vehicles: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
 def init_db():
     with app.app_context():

@@ -7,6 +7,10 @@ from datetime import datetime
 import pandas as pd
 import io
 import logging
+import os
+from src.ai_processor import process_message_with_ai
+import traceback
+import requests
 
 main_bp = Blueprint('main', __name__)
 
@@ -287,7 +291,7 @@ def upload_vehicles():
                     'ano_fabricacao': ['Ano Fabricação', 'Ano Fabricacao', 'ANO FABRICAÇÃO', 'ANO FABRICACAO'],
                     'ano_modelo': ['Ano Modelo', 'ANO MODELO'],
                     'quilometragem': ['Quilometragem', 'QUILOMETRAGEM'],
-                    'estado': ['Estado', 'ESTADO'],
+                    "estado": ['Estado', 'ESTADO'],
                     'cambio': ['Câmbio', 'Cambio', 'CÂMBIO', 'CAMBIO'],
                     'combustivel': ['Combustível', 'Combustivel', 'COMBUSTÍVEL', 'COMBUSTIVEL'],
                     'motor': ['Motor', 'MOTOR'],
@@ -335,6 +339,200 @@ def upload_vehicles():
         db.session.rollback()
         current_app.logger.error(f"Error processing file: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
+
+def send_whatsapp_message(phone_number, message, image_url=None):
+    """Envia mensagem usando a API do WhatsApp Business."""
+    url = f"https://graph.facebook.com/v17.0/{os.getenv('WHATSAPP_PHONE_NUMBER_ID')}/messages"
+    
+    headers = {
+        "Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": phone_number,
+        "type": "text",
+        "text": {"body": message}
+    }
+    
+    if image_url:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": phone_number,
+            "type": "image",
+            "image": {
+                "link": image_url
+            }
+        }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        current_app.logger.error(f"Error sending WhatsApp message: {str(e)}")
+        return None
+
+@main_bp.route("/whatsapp/webhook", methods=['POST'])
+def whatsapp_webhook():
+    try:
+        data = request.get_json()
+        if not data or 'entry' not in data:
+            return jsonify({'error': 'Invalid webhook payload'}), 400
+            
+        # Extrai a mensagem do payload do WhatsApp Business API
+        entry = data['entry'][0]
+        changes = entry.get('changes', [])
+        if not changes:
+            return jsonify({'error': 'No changes in webhook payload'}), 400
+            
+        value = changes[0].get('value', {})
+        messages = value.get('messages', [])
+        if not messages:
+            return jsonify({'error': 'No messages in webhook payload'}), 400
+            
+        message = messages[0]
+        incoming_msg = message.get('text', {}).get('body', '').strip().lower()
+        sender_phone_number = message.get('from', '')
+
+        current_app.logger.info(f"Mensagem recebida de {sender_phone_number}: {incoming_msg}")
+        dealership = Dealership.query.filter_by(active=True).first()
+        if not dealership:
+            return jsonify({'error': 'No active dealership found'}), 404
+
+        # Detecta resposta de botão
+        if incoming_msg.startswith("quero saber mais"):
+            # Tenta extrair o modelo do texto
+            modelo = None
+            palavras = incoming_msg.split()
+            if len(palavras) > 3:
+                modelo = ' '.join(palavras[3:]).strip()
+            if not modelo:
+                modelo = None
+            # Busca veículo pelo modelo
+            veiculo = None
+            if modelo:
+                veiculo = Vehicle.query.filter(
+                    Vehicle.dealership_id == dealership.id,
+                    Vehicle.modelo.ilike(f"%{modelo}%"),
+                    Vehicle.vendido == False
+                ).first()
+            if veiculo:
+                fotos = [url.strip() for url in (veiculo.link_fotos or '').split(';') if url.strip()]
+                image_url = fotos[0] if fotos else None
+                mensagem = f"*{veiculo.marca} {veiculo.modelo} {veiculo.ano_modelo}*\n" \
+                           f"Preço: R$ {veiculo.preco:,.2f}\n" \
+                           f"Cor: {veiculo.cor}\n" \
+                           f"Quilometragem: {veiculo.quilometragem:,} km\n" \
+                           f"Câmbio: {veiculo.cambio}\n" \
+                           f"Combustível: {veiculo.combustivel}\n" \
+                           f"Itens: {veiculo.itens_opcionais if veiculo.itens_opcionais else 'Não informado'}"
+                if image_url:
+                    send_whatsapp_message(sender_phone_number, mensagem, image_url=image_url)
+                else:
+                    send_whatsapp_message(sender_phone_number, mensagem)
+                current_app.logger.info("--- MENSAGEM WHATSAPP (DETALHE VEÍCULO) ---")
+                current_app.logger.info(f"Para: {sender_phone_number}")
+                current_app.logger.info(f"Texto: {mensagem}")
+                if image_url:
+                    current_app.logger.info(f"Imagem: {image_url}")
+                current_app.logger.info("-------------------------------")
+                return ('', 204)
+            else:
+                mensagem = f"Desculpe, não encontrei informações detalhadas sobre esse veículo. Posso te ajudar com outro modelo?"
+                send_whatsapp_message(sender_phone_number, mensagem)
+                return ('', 204)
+        elif incoming_msg in ["não, obrigado", "nao, obrigado", "não obrigado", "nao obrigado"]:
+            prompt = "Responda de forma simpática e cordial, agradecendo o interesse e se colocando à disposição para futuras dúvidas."
+            resposta_ia = process_message_with_ai(dealership.id, prompt)
+            mensagem = resposta_ia['text'] if isinstance(resposta_ia, dict) else resposta_ia
+            send_whatsapp_message(sender_phone_number, mensagem)
+            current_app.logger.info("--- MENSAGEM WHATSAPP (DESPEDIDA) ---")
+            current_app.logger.info(f"Para: {sender_phone_number}")
+            current_app.logger.info(f"Texto: {mensagem}")
+            current_app.logger.info("-------------------------------")
+            return ('', 204)
+
+        # Caso padrão: busca veículos e envia template com botões
+        resposta = process_message_with_ai(dealership.id, incoming_msg)
+        if isinstance(resposta, list) and resposta:
+            primeiro_veiculo = resposta[0]
+            mensagem = primeiro_veiculo['text']
+            image_url = primeiro_veiculo.get('image')
+            if image_url:
+                send_whatsapp_message(sender_phone_number, mensagem, image_url=image_url)
+            else:
+                send_whatsapp_message(sender_phone_number, mensagem)
+            current_app.logger.info("--- MENSAGEM WHATSAPP (VEÍCULO) ---")
+            current_app.logger.info(f"Para: {sender_phone_number}")
+            current_app.logger.info(f"Texto: {mensagem}")
+            if image_url:
+                current_app.logger.info(f"Imagem: {image_url}")
+            current_app.logger.info("-------------------------------")
+            return ('', 204)
+        elif isinstance(resposta, dict):
+            mensagem = resposta['text']
+            image_url = resposta.get('image')
+            if image_url:
+                send_whatsapp_message(sender_phone_number, mensagem, image_url=image_url)
+            else:
+                send_whatsapp_message(sender_phone_number, mensagem)
+            current_app.logger.info("--- MENSAGEM WHATSAPP ---")
+            current_app.logger.info(f"Para: {sender_phone_number}")
+            current_app.logger.info(f"Texto: {mensagem}")
+            if image_url:
+                current_app.logger.info(f"Imagem: {image_url}")
+            current_app.logger.info("-------------------------------")
+            return ('', 204)
+        else:
+            send_whatsapp_message(sender_phone_number, str(resposta))
+            return ('', 204)
+    except Exception as e:
+        current_app.logger.error(f"Error in WhatsApp webhook: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@main_bp.route('/debug/env')
+def debug_env():
+    return {"GEMINI_API_KEY": os.getenv("GEMINI_API_KEY")}
+
+@main_bp.route('/debug/vehicles', methods=['GET'])
+def debug_vehicles():
+    """Rota de debug para listar todos os veículos, incluindo vendidos."""
+    try:
+        vehicles = Vehicle.query.all()
+        output = []
+        for vehicle in vehicles:
+            vehicle_data = {
+                'id': vehicle.id,
+                'dealership_id': vehicle.dealership_id,
+                'marca': vehicle.marca,
+                'modelo': vehicle.modelo,
+                'ano_fabricacao': vehicle.ano_fabricacao,
+                'ano_modelo': vehicle.ano_modelo,
+                'quilometragem': vehicle.quilometragem,
+                'estado': vehicle.estado,
+                'preco': vehicle.preco,
+                'itens_opcionais': vehicle.itens_opcionais,
+                'cambio': vehicle.cambio,
+                'combustivel': vehicle.combustivel,
+                'final_placa': vehicle.final_placa,
+                'cor': vehicle.cor,
+                'link_fotos': vehicle.link_fotos,
+                'vendido': vehicle.vendido,
+                'data_cadastro': vehicle.data_cadastro.isoformat() if vehicle.data_cadastro else None
+            }
+            output.append(vehicle_data)
+        return jsonify({
+            'status': 'success',
+            'count': len(output),
+            'vehicles': output
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 # Não se esqueça de registrar o blueprint em main.py:
 # from src.routes import main_bp
